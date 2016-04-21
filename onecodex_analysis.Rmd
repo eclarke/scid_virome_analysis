@@ -1,0 +1,218 @@
+---
+title: "SCID Virome Analysis (One Codex)"
+author: "Erik Clarke"
+date: "April 18, 2016"
+output: 
+  html_document:
+    code_folding: hide
+    css: custom.css
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache=TRUE)
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(magrittr)
+library(ggplot2)
+library(pander)
+
+library(eclectic)
+data.fp <- "~/ext/100_SCID/103_Virome"
+taxonomic_ranks <- c(qiimer::taxonomic_ranks, "Strain")
+
+theme_set(
+  theme_classic(base_size = 14) +
+    theme(
+      plot.title = element_text(hjust=0),
+      axis.ticks = element_line(size=0.75), 
+      axis.line.x = element_line(colour = 'black', size=0.6, linetype='solid'),
+      axis.line.y = element_line(colour = 'black', size=0.6, linetype='solid'),
+      strip.background = element_blank(),
+      strip.text = element_text( hjust=0)
+    )
+)
+```
+
+```{r load-data, warning=FALSE, message=FALSE}
+
+## --- Taxa ----
+
+taxa <- read.delim(file.path(data.fp, "data_files/one_codex/all_taxa.tsv"), 
+                   header=TRUE, check.names = FALSE) %>%
+  rename("otu"=tax_id, "Kingdom"=superkingdom, "Phylum"=phylum, "Class"=class, "Order"=order,
+         "Family"=family, "Genus"=genus, "Species"=species, "Strain"=name) %>%
+  eclectic::reorder_taxa(ranks = taxonomic_ranks)
+
+rownames(taxa) <- taxa$otu
+
+
+## --- Counts ----
+
+counts <- read.delim(file.path(data.fp, "data_files/one_codex/all_samples.tsv"), 
+                     header=TRUE, check.names=FALSE)
+colnames(counts)[colnames(counts)=="library_blank_NA"] <- "library-blank_NA"
+rownames(counts) <- as.character(counts$tax_id)
+counts$tax_id <- NULL
+counts[is.na(counts)] <- 0
+
+
+## --- Samples ----
+
+sample.mdata <- read.delim(file.path(data.fp, "Samples.tsv")) %>% 
+  select(Subject:SampleNo, Timepoint, Location) %>% distinct() %>%
+  mutate(Timepoint = as.Date(Timepoint))
+
+# Reads mapped, OCX reference DB id, etc
+analysis.mdata <- read.delim(file.path(data.fp, "data_files/one_codex/sample_summary.tsv")) %>%
+  rename("SampleID"=sample_filename) %>%
+  mutate(SampleID = sub("PCMP_", "", SampleID)) %>%
+  mutate(SampleID = sub("_assembled.fastq", "", SampleID)) %>%
+  mutate(SampleID = str_replace(SampleID, "library_blank", "library-blank")) %>%
+  separate(SampleID, into=c("DerivingSampleID", "LibraryMethod"), sep="_", remove=FALSE)
+
+# Parsing and cleaning-up sample names to integrate with metadata
+.samples <- colnames(counts[, colnames(counts)]) 
+.samples <- str_replace(.samples, "library_blank", "library-blank")
+samples <- data.frame(SampleID=.samples) %>%
+  separate(
+    SampleID, c("DerivingSampleID", "LibraryMethod"), sep="_",
+    remove=FALSE) %>%
+  separate(
+    DerivingSampleID, 
+    c("Subject", "SampleType", "SampleNo", "ExtrNo"), 
+    fill = "right", remove = FALSE) %>%
+  mutate_each("as.integer", SampleNo:ExtrNo) %>%
+  mutate_each("as.factor", SampleID:SampleType) %>%
+  left_join(
+    sample.mdata, by=c("Subject", "SampleType", "SampleNo"), copy=TRUE) %>%
+  distinct(SampleID, LibraryMethod) %>%
+  mutate(SampleType = plyr::revalue(SampleType, c("1"="EC", "blank"="EC"))) %>%
+  left_join(analysis.mdata)
+
+ocx <- eclectic::agglomerate(samples, counts, taxa) %>%
+  group_by(SampleID) %>%
+  mutate(freq=count/sum(count))
+```
+
+# Overview
+
+The number of distinct taxonomic IDs found in all samples, by kingdom:
+```{r totals, results='asis'}
+pander(table(taxa$Kingdom))
+```
+
+## Heatmaps
+
+```{r viruses}
+viruses <- ocx %>% group_by(LibraryMethod, otu) %>%
+  filter(Kingdom == "Viruses") %>% 
+  mutate(MinRank = eclectic::tax_climber(otu, taxa, end="Strain", ranks = taxonomic_ranks)) %>%
+  filter(Subject != "library")
+
+p <- ggplot(viruses, aes(x=DerivingSampleID, y=otu, fill=log10(count))) +
+  geom_tile(color="white") +
+  eclectic::saturated_rainbow_cts() +
+  scale_y_discrete(labels=eclectic::named_vector(viruses, "otu", "Strain")) +
+  facet_grid(Order~LibraryMethod+StudyGroup, scales="free", space="free") +
+  theme_bw() +
+  theme(
+    strip.text.y=element_text(angle=0, size=10),
+    strip.text.x=element_text(angle=90, size=10),
+    axis.text.x=element_text(angle=-90, hjust=0, vjust=0.5, size=10)
+  ) +
+  ggtitle("Viruses in SCID patients")
+p <- make_square(p, fudge=2)
+ggsave(filename = "ViromeHeatmap.pdf", height=40, width=25)
+print("Full virome heatmap saved to ViromeHeatmap.pdf")
+```
+
+```{r virus-heatmap-condensed, fig.height=13, fig.width=10, fig.keep=TRUE}
+gt2.viruses <- viruses %>% 
+  group_by(otu) %>%
+  filter(sum(count > 0) > 1)
+p2 <- ggplot(gt2.viruses, aes(x=DerivingSampleID, y=otu, fill=log10(count))) +
+  geom_tile(color="white") +
+  eclectic::saturated_rainbow_cts(threshold = 0.9) +
+  scale_y_discrete(labels=eclectic::named_vector(viruses, "otu", "Strain")) +
+  facet_grid(Order~LibraryMethod+StudyGroup, scales="free", space="free") +
+  theme_bw() +
+  theme(
+    strip.text.y=element_text(angle=0, size=10),
+    strip.text.x=element_text(angle=90, size=10),
+    axis.text.x=element_text(angle=-90, hjust=0, vjust=0.5, size=10)
+  ) +
+  ggtitle("Viruses in SCID patients")
+p2 <- make_square(p2, fudge=2)
+plot(p2)
+ggsave(filename = "CondensedViromeHeatmap.pdf", height=13, width=10)
+```
+
+## Longitudinal bar charts
+
+In these bar charts, each viral family has a distinct hue within its chart to help identify related viruses. Thus, viruses within the same family will have the same hue, but different lightness.
+
+### SCID patients
+
+```{r scid-viral-barcharts, fig.height=8, fig.width=10, results='asis'}
+viruses <- viruses %>% 
+  group_by(SampleID) %>%
+  mutate(TotalViralReads = sum(count))
+
+plyr::d_ply(filter(viruses, StudyGroup == "SCID"), .(Subject, LibraryMethod), function(slm) {
+  slm <- slm %>% group_by(otu) %>% filter(sum(count) > 1) %>% droplevels
+  slm <- slm %>% mutate(Timepoint = as.character(Timepoint))
+
+  .subject <- unique(as.character(slm$Subject))
+  .libmethod <- unique(as.character(slm$LibraryMethod))
+  
+  .colors <- eclectic::subcolor_pal(slm$Strain, slm$Family)
+  
+  p <- ggplot(slm, aes(x=SampleID, count, fill=Strain)) +
+    geom_bar(stat = "identity", position="fill") +
+    scale_y_continuous(expand=c(0,0)) +
+    scale_x_discrete(labels=named_vector(slm, "SampleID", "Timepoint")) +
+    scale_fill_manual(values = .colors$minor) +
+    theme(axis.text.x=element_text(angle=-45, hjust=0, vjust=1)) +
+    labs(y="Proportion", title=sprintf("Viruses in %s stool (%s)", .subject, .libmethod))
+  plot(p)
+
+  cat(sprintf("%s stool read counts (%s):\n", .subject, .libmethod))
+  slm %>% ungroup() %>%
+    select(Timepoint, "Total viral reads"=TotalViralReads) %>% distinct %>%
+    arrange(Timepoint) %>%
+    knitr::kable() %>% print
+  cat("\n\n")
+
+})
+```
+
+### Healthy controls
+
+```{r healthy-viral-barcharts, fig.height=8, fig.width=12, results='asis'}
+healthy.v <- viruses %>% filter(StudyGroup == "healthy") %>%
+  group_by(otu) %>% filter(sum(count) > 1) %>% droplevels
+
+d_ply(healthy.v, .(LibraryMethod), function(slm) {
+  .libmethod <- unique(as.character(slm$LibraryMethod))
+  .colors <- eclectic::subcolor_pal(healthy.v$Strain, healthy.v$Family)
+  p <- ggplot(slm, aes(x=Subject, count, fill=Strain)) +
+    geom_bar(stat = "identity", position="fill") +
+    scale_y_continuous(expand=c(0,0)) +
+    scale_fill_manual(values = .colors$minor) +
+    theme(axis.text.x=element_text(angle=-45, hjust=0, vjust=1)) +
+    labs(y="Proportion", title=sprintf("Viruses in healthy stool (%s)", .libmethod))
+  plot(p)
+  
+  cat(sprintf("Healthy stool read counts (%s):\n", .libmethod))
+  slm %>% ungroup() %>%
+    select(Subject, "Total viral reads"=TotalViralReads) %>% distinct %>%
+    knitr::kable() %>% print
+  cat("\n\n")
+})
+
+```
+
