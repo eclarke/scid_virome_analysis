@@ -1,3 +1,6 @@
+# Data files
+data_files
+
 # Report output
 *.html
 *.pdf

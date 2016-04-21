@@ -1,0 +1,3 @@
+[submodule "onecodex"]
+	path = onecodex
+	url = git@github.com:eclarke/onecodex_pipeline
