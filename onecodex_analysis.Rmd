@@ -19,7 +19,7 @@ library(stringr)
 library(magrittr)
 library(ggplot2)
 library(pander)
-
+library(ggbeeswarm)
 library(eclectic)
 data.fp <- "~/ext/100_SCID/103_Virome"
 taxonomic_ranks <- c(qiimer::taxonomic_ranks, "Strain")
@@ -105,13 +105,65 @@ The number of distinct taxonomic IDs found in all samples, by kingdom:
 pander(table(taxa$Kingdom))
 ```
 
-## Heatmaps
+The number of reads mapped to each kingdom:
+```{r}
+ocx %>% group_by(Kingdom, LibraryMethod) %>% tally(count) %$% xtabs(n ~ LibraryMethod + Kingdom) %>%
+  pander
+```
 
+
+# Virome
 ```{r viruses}
 viruses <- ocx %>% group_by(LibraryMethod, otu) %>%
   filter(Kingdom == "Viruses") %>% 
   mutate(MinRank = eclectic::tax_climber(otu, taxa, end="Strain", ranks = taxonomic_ranks)) %>%
   filter(Subject != "library")
+```
+
+## Reads by group {.tabset}
+
+### Study group
+
+```{r}
+viruses %>% filter(count > 1) %>%
+ggplot(aes(x=StudyGroup, y=count/n_reads)) +
+  scale_y_log10() +
+  annotation_logticks(sides="l") +
+  geom_boxplot(notch = TRUE, coef=1000) +
+  geom_quasirandom(shape=21) +
+  labs(y="Pct of mapped reads assigned to viruses", 
+       title="Viral counts by study group")
+```
+
+### Sample type
+
+```{r}
+viruses %>% filter(count > 1) %>%
+ggplot(aes(x=SampleType, y=count/n_reads)) +
+  scale_y_log10() +
+  annotation_logticks(sides="l") +
+  geom_boxplot(notch = TRUE, coef=1000) +
+  geom_quasirandom(shape=21) +
+  labs(y="Pct of mapped reads assigned to viruses", 
+       title="Viral counts by sample type")
+```
+
+### Library method
+
+```{r}
+viruses %>% filter(count > 1) %>%
+ggplot(aes(x=LibraryMethod, y=count/n_reads)) +
+  scale_y_log10() +
+  geom_boxplot(notch = TRUE,coef=1000) +
+  annotation_logticks(sides="l") +
+  geom_quasirandom(shape=21) +
+  labs(y="Pct of mapped reads assigned to viruses", 
+       title="Viral counts by library method")
+```
+
+## Heatmaps
+
+```{r virus-heatmaps}
 
 p <- ggplot(viruses, aes(x=DerivingSampleID, y=otu, fill=log10(count))) +
   geom_tile(color="white") +
